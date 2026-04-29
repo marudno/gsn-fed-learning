@@ -1,1 +1,24 @@
 .idea/
+
+# Dane
+data/
+*.jpeg
+*.jpg
+*.png
+*.zip
+
+# Wyniki EDA
+eda_output/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
