@@ -1,11 +1,11 @@
-.idea/
-
 # Dane
 data/
 *.jpeg
 *.jpg
 *.png
 *.zip
+trainLabels.csv
+testLabels.csv
 
 # Wyniki EDA
 eda_output/
@@ -22,3 +22,11 @@ __pycache__/
 # IDE
 .vscode/
 .idea/
+
+# Flower
+.flwr/
+
+# Model artifacts produced by a run
+final_model.pt
+*.pt
+*.pth
