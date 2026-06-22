@@ -13,6 +13,7 @@ dependencies = [
     "torchvision==0.27.1",
     "pandas>=2.0.0",
     "pillow>=10.0.0",
+    "scikit-learn>=1.9.0"
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -27,10 +28,10 @@ clientapp = "retinopathy_fl.client_app:app"
 
 [tool.flwr.app.config]
 num-server-rounds = 10
-lr = 0.01
-model-type = "standard"     # "standard" or "bn"
 local-epochs = 10
+lr = 0.01
 fraction-train = 1.0
+model-type = "standard"     # "standard" or "bn"
 strategy = "FedAvg"         # FedAvg, FedAdam, FedYogi, FedProx
 
 [tool.flwr.federations]
@@ -38,4 +39,4 @@ default = "local-simulation"
 
 [tool.flwr.federations.local-simulation]
 options.num-supernodes = 3
-options.backend.client-resources.num-gpus = 2
+options.backend.client-resources.num-gpus = 0.25 # GPU per client
