@@ -105,7 +105,7 @@ _FULL_TRAIN_DF = None
 _VAL_DATASET   = None
 
 def _get_base_data():
-    """Load and split CSV once, cache globally."""
+    """Load train/val split based on Kaggle competition structure."""
     global _FULL_TRAIN_DF, _VAL_DATASET
     if _FULL_TRAIN_DF is None:
         df = pd.read_csv(TRAIN_LABELS)
@@ -116,13 +116,23 @@ def _get_base_data():
         )].reset_index(drop=True)
         print(f"Available images: {len(df)}")
 
-        # Use stratify only when every class has >= 2 samples
-        class_counts = df["level"].value_counts()
-        use_stratify = (class_counts >= 2).all()
-        train_df, val_df = train_test_split(
-            df, test_size=0.2, random_state=42,
-            stratify=df["level"] if use_stratify else None
-        )
+        # Deterministic train/val split by patient ID
+        # Kaggle image names: {patient_id}_{left/right}.jpeg
+        # Split by patient so left and right eye of same patient
+        # are always in the same split — prevents data leakage
+        df["patient_id"] = df["image"].apply(lambda x: x.rsplit("_", 1)[0])
+        patient_ids = df["patient_id"].unique()
+
+        rng = np.random.default_rng(42)
+        rng.shuffle(patient_ids)
+        n_val = int(len(patient_ids) * 0.2)
+        val_patients = set(patient_ids[:n_val])
+
+        train_df = df[~df["patient_id"].isin(val_patients)].drop(columns="patient_id")
+        val_df   = df[ df["patient_id"].isin(val_patients)].drop(columns="patient_id")
+
+        print(f"Train: {len(train_df)} | Val: {len(val_df)}")
+
         _FULL_TRAIN_DF = train_df.reset_index(drop=True)
         _VAL_DATASET   = RetinopathyDataset(TRAIN_DIR, val_df, val_transforms)
     return _FULL_TRAIN_DF, _VAL_DATASET
