@@ -15,7 +15,7 @@ from sklearn.utils.class_weight import compute_class_weight
 # ---------------------------------------------------------------------------
 # Paths — works on Kaggle and Colab
 # ---------------------------------------------------------------------------
-BASE_DIR     = os.environ.get("DATA_DIR", "/kaggle/input/diabetic-retinopathy-detection")
+BASE_DIR     = os.environ.get("DATA_DIR", "/kaggle/working/data")
 TRAIN_DIR    = os.path.join(BASE_DIR, "train")
 TRAIN_LABELS = os.path.join(BASE_DIR, "trainLabels.csv")
 
