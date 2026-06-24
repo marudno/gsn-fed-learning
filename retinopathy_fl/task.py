@@ -1,32 +1,47 @@
-"""retinopathy_fl: model, dataset and train/test utilities shared by ClientApp and ServerApp."""
+"""retinopathy_fl: model, dataset and train/test utilities."""
 
 import os
-
+import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from PIL import Image
-from torch.utils.data import DataLoader, Dataset
-from torchvision import transforms
+from torch.utils.data import DataLoader, Dataset, Subset
+from torchvision import transforms, models
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import cohen_kappa_score
+from sklearn.utils.class_weight import compute_class_weight
 
 # ---------------------------------------------------------------------------
-# Data paths
+# Paths — works on Kaggle and Colab
 # ---------------------------------------------------------------------------
-# Overridable via environment variables so the same code works locally,
-# on Kaggle (read-only /kaggle/input/<dataset>/...) or anywhere else.
-BASE_DIR = "/kaggle/input/diabetic-retinopathy-detection"
-TRAIN_DIR = f"{BASE_DIR}/train"
-TRAIN_LABELS = f"{BASE_DIR}/trainLabels.csv"
+BASE_DIR     = os.environ.get("DATA_DIR", "/kaggle/input/diabetic-retinopathy-detection")
+TRAIN_DIR    = os.path.join(BASE_DIR, "train")
+TRAIN_LABELS = os.path.join(BASE_DIR, "trainLabels.csv")
 
-pytorch_transforms = transforms.Compose(
-    [
-        transforms.ToTensor(),
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-    ]
-)
+NUM_CLASSES = 5
+IMG_SIZE    = 224
 
+# ---------------------------------------------------------------------------
+# Transforms
+# ---------------------------------------------------------------------------
+train_transforms = transforms.Compose([
+    transforms.Resize((IMG_SIZE, IMG_SIZE)),
+    transforms.RandomHorizontalFlip(),
+    transforms.RandomVerticalFlip(),
+    transforms.RandomRotation(15),
+    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.1),
+    transforms.ToTensor(),
+    transforms.Normalize([0.485, 0.456, 0.406],
+                         [0.229, 0.224, 0.225]),
+])
+
+val_transforms = transforms.Compose([
+    transforms.Resize((IMG_SIZE, IMG_SIZE)),
+    transforms.ToTensor(),
+    transforms.Normalize([0.485, 0.456, 0.406],
+                         [0.229, 0.224, 0.225]),
+])
 
 # ---------------------------------------------------------------------------
 # Dataset
@@ -41,183 +56,152 @@ class RetinopathyDataset(Dataset):
         return len(self.df)
 
     def __getitem__(self, idx):
-        image_name = self.df.iloc[idx]["image"]
-        label = self.df.iloc[idx]["level"]
-
-        image_path = os.path.join(self.image_dir, f"{image_name}.jpeg")
-        image = Image.open(image_path).convert("RGB")
-
+        row = self.df.iloc[idx]
+        path = os.path.join(self.image_dir, f"{row['image']}.jpeg")
+        image = Image.open(path).convert("RGB")
         if self.transform:
             image = self.transform(image)
-
-        return image, label
+        return image, int(row["level"])
 
 # ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------
-class Net(nn.Module):
-    """Simple CNN adapted from 'PyTorch: A 60 Minute Blitz'."""
+AVAILABLE_MODELS = ["resnet18", "resnet50", "densenet121", "efficientnet_b2",
+                    "convnext_tiny", "swin_tiny"]
 
-    def __init__(self):
-        super().__init__()
-        self.conv1 = nn.Conv2d(3, 6, 5)
-        self.pool = nn.MaxPool2d(2, 2)
-        self.conv2 = nn.Conv2d(6, 16, 5)
-        self.fc1 = nn.Linear(16 * 53 * 53, 120)
-        self.fc2 = nn.Linear(120, 84)
-        self.fc3 = nn.Linear(84, 5)
+def get_model(name: str = "efficientnet_b2") -> nn.Module:
+    """Return pretrained model with classifier head replaced for NUM_CLASSES."""
+    if name == "resnet18":
+        m = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
+        m.fc = nn.Linear(m.fc.in_features, NUM_CLASSES)
 
-    def forward(self, x):
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = x.view(x.size(0), -1)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        return self.fc3(x)
+    elif name == "resnet50":
+        m = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
+        m.fc = nn.Linear(m.fc.in_features, NUM_CLASSES)
 
+    elif name == "densenet121":
+        m = models.densenet121(weights=models.DenseNet121_Weights.DEFAULT)
+        m.classifier = nn.Linear(m.classifier.in_features, NUM_CLASSES)
 
-class NetBN(nn.Module):
-    """Simple CNN with BatchNorm layers."""
+    elif name == "efficientnet_b2":
+        m = models.efficientnet_b2(weights=models.EfficientNet_B2_Weights.DEFAULT)
+        m.classifier[1] = nn.Linear(m.classifier[1].in_features, NUM_CLASSES)
 
-    def __init__(self):
-        super().__init__()
-        self.conv1 = nn.Conv2d(3, 6, 5)
-        self.bn1 = nn.BatchNorm2d(6)
+    elif name == "convnext_tiny":
+        m = models.convnext_tiny(weights=models.ConvNeXt_Tiny_Weights.DEFAULT)
+        m.classifier[2] = nn.Linear(m.classifier[2].in_features, NUM_CLASSES)
 
-        self.conv2 = nn.Conv2d(6, 16, 5)
-        self.bn2 = nn.BatchNorm2d(16)
+    elif name == "swin_tiny":
+        m = models.swin_t(weights=models.Swin_T_Weights.DEFAULT)
+        m.head = nn.Linear(m.head.in_features, NUM_CLASSES)
 
-        self.pool = nn.MaxPool2d(2, 2)
+    else:
+        raise ValueError(f"Unknown model: {name}. Choose from {AVAILABLE_MODELS}")
 
-        self.fc1 = nn.Linear(16 * 53 * 53, 120)
-        self.bn3 = nn.BatchNorm1d(120)
-
-        self.fc2 = nn.Linear(120, 84)
-        self.bn4 = nn.BatchNorm1d(84)
-
-        self.fc3 = nn.Linear(84, 5)
-
-    def forward(self, x):
-        x = self.pool(F.relu(self.bn1(self.conv1(x))))
-        x = self.pool(F.relu(self.bn2(self.conv2(x))))
-        x = x.view(x.size(0), -1)
-        x = F.relu(self.bn3(self.fc1(x)))
-        x = F.relu(self.bn4(self.fc2(x)))
-        return self.fc3(x)
-
-
-def get_model_type(name: str) -> nn.Module:
-    """Return a fresh model instance given a model-type name ('standard' or 'bn')."""
-    if name == "bn":
-        return NetBN()
-    return Net()
+    return m
 
 
 def filter_state_dict(state_dict):
-    """Drop BatchNorm `num_batches_tracked` buffers before sending over the wire.
-
-    These integer buffers are not meaningfully aggregated across clients, so we
-    exclude them from the ArrayRecord that gets communicated between the
-    ServerApp and the ClientApps.
-    """
+    """Drop BatchNorm num_batches_tracked before sending over the wire."""
     return {k: v for k, v in state_dict.items() if "num_batches_tracked" not in k}
 
-
 # ---------------------------------------------------------------------------
-# Data loading
+# Data loading — IID i non-IID (Dirichlet)
 # ---------------------------------------------------------------------------
-def load_data(partition_id: int, num_partitions: int):
+_FULL_TRAIN_DF = None
+_VAL_DATASET   = None
 
-    global _TRAIN_DATASET, _VAL_DATASET
-
-    if _TRAIN_DATASET is None:
-
+def _get_base_data():
+    """Load and split CSV once, cache globally."""
+    global _FULL_TRAIN_DF, _VAL_DATASET
+    if _FULL_TRAIN_DF is None:
         df = pd.read_csv(TRAIN_LABELS)
-
         train_df, val_df = train_test_split(
-            df,
-            test_size=0.2,
-            random_state=42,
-            stratify=df["level"]
+            df, test_size=0.2, random_state=42, stratify=df["level"]
         )
+        _FULL_TRAIN_DF = train_df.reset_index(drop=True)
+        _VAL_DATASET   = RetinopathyDataset(TRAIN_DIR, val_df, val_transforms)
+    return _FULL_TRAIN_DF, _VAL_DATASET
 
-        _TRAIN_DATASET = RetinopathyDataset(
-            TRAIN_DIR,
-            train_df,
-            transform=pytorch_transforms
-        )
 
-        _VAL_DATASET = RetinopathyDataset(
-            TRAIN_DIR,
-            val_df,
-            transform=pytorch_transforms
-        )
+def load_data(partition_id: int, num_partitions: int,
+              partition_type: str = "iid", alpha: float = 0.5,
+              batch_size: int = 32):
+    """
+    partition_type: 'iid'     — równy losowy podział
+                    'dirichlet' — non-IID wg rozkładu Dirichlet(alpha)
+    alpha: parametr Dirichlet (mniejszy = bardziej non-IID), używany tylko dla 'dirichlet'
+    """
+    train_df, val_dataset = _get_base_data()
+    full_dataset = RetinopathyDataset(TRAIN_DIR, train_df, train_transforms)
+    n = len(full_dataset)
 
-    train_dataset = _TRAIN_DATASET
-    val_dataset = _VAL_DATASET
+    if partition_type == "iid":
+        # Losowy równy podział
+        rng     = np.random.default_rng(42)
+        indices = rng.permutation(n).tolist()
+        size    = n // num_partitions
+        start   = partition_id * size
+        end     = n if partition_id == num_partitions - 1 else start + size
+        client_indices = indices[start:end]
 
-    total_size = len(train_dataset)
+    elif partition_type == "dirichlet":
+        # Non-IID: Dirichlet distribution per class
+        labels = train_df["level"].values
+        rng    = np.random.default_rng(42)
+        class_indices = [np.where(labels == c)[0] for c in range(NUM_CLASSES)]
+        client_indices_per_class = []
+        for c_idx in class_indices:
+            # Proporcje dla każdego klienta z rozkładu Dirichlet
+            proportions = rng.dirichlet(alpha=np.repeat(alpha, num_partitions))
+            splits = (proportions * len(c_idx)).astype(int)
+            # Poprawka żeby suma była równa len(c_idx)
+            splits[-1] = len(c_idx) - splits[:-1].sum()
+            shuffled = rng.permutation(c_idx)
+            boundaries = np.concatenate([[0], np.cumsum(splits)])
+            client_indices_per_class.append(
+                shuffled[boundaries[partition_id]:boundaries[partition_id + 1]]
+            )
+        client_indices = np.concatenate(client_indices_per_class).tolist()
 
-    partition_size = total_size // num_partitions
-    start = partition_id * partition_size
-
-    if partition_id == num_partitions - 1:
-        end = total_size
     else:
-        end = start + partition_size
-
-    indices = list(range(start, end))
-
-    client_dataset = torch.utils.data.Subset(
-        train_dataset,
-        indices
-    )
+        raise ValueError(f"Unknown partition_type: {partition_type}")
 
     trainloader = DataLoader(
-        client_dataset,
-        batch_size=32,
-        shuffle=True
+        Subset(full_dataset, client_indices),
+        batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=True
     )
-
     valloader = DataLoader(
         val_dataset,
-        batch_size=32,
-        shuffle=False
+        batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True
     )
-
     return trainloader, valloader
 
-def load_centralized_dataset():
 
-    df = pd.read_csv(TRAIN_LABELS)
+def load_centralized_dataset(batch_size: int = 128):
+    _, val_dataset = _get_base_data()
+    return DataLoader(val_dataset, batch_size=batch_size, shuffle=False,
+                      num_workers=2, pin_memory=True)
 
-    _, val_df = train_test_split(
-        df,
-        test_size=0.2,
-        random_state=42,
-        stratify=df["level"]
-    )
 
-    val_dataset = RetinopathyDataset(
-        TRAIN_DIR,
-        val_df,
-        transform=pytorch_transforms
-    )
-
-    return DataLoader(
-        val_dataset,
-        batch_size=128,
-        shuffle=False
-    )
+def get_class_weights(device):
+    """Compute inverse-frequency class weights for weighted CrossEntropyLoss."""
+    train_df, _ = _get_base_data()
+    labels  = train_df["level"].values
+    weights = compute_class_weight("balanced", classes=np.arange(NUM_CLASSES), y=labels)
+    return torch.FloatTensor(weights).to(device)
 
 # ---------------------------------------------------------------------------
-# Train / test loops
+# Train / test
 # ---------------------------------------------------------------------------
-def train_local_model(net, trainloader, epochs, lr, device) -> float:
-    """Train the model on the local training set for the given number of epochs."""
+def train_local_model(net, trainloader, epochs, lr, device,
+                      use_weighted_loss: bool = True) -> float:
     net.to(device)
-    criterion = torch.nn.CrossEntropyLoss().to(device)
+    criterion = nn.CrossEntropyLoss(
+        weight=get_class_weights(device) if use_weighted_loss else None
+    ).to(device)
     optimizer = torch.optim.Adam(net.parameters(), lr=lr)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
     net.train()
 
     running_loss = 0.0
@@ -229,24 +213,31 @@ def train_local_model(net, trainloader, epochs, lr, device) -> float:
             loss.backward()
             optimizer.step()
             running_loss += loss.item()
+        scheduler.step()
 
-    return running_loss / len(trainloader)
+    return running_loss / (len(trainloader) * epochs)
 
 
 def test(net, testloader, device):
-    """Evaluate the model on the given dataloader. Returns (loss, accuracy)."""
+    """Returns (loss, accuracy, qwk)."""
     net.to(device)
     net.eval()
-    criterion = torch.nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss()
 
-    correct, loss = 0, 0.0
+    all_preds, all_labels = [], []
+    total_loss = 0.0
+
     with torch.no_grad():
         for images, labels in testloader:
             images, labels = images.to(device), labels.to(device)
             outputs = net(images)
-            loss += criterion(outputs, labels).item()
-            correct += (torch.max(outputs.data, 1)[1] == labels).sum().item()
+            total_loss += criterion(outputs, labels).item()
+            preds = torch.argmax(outputs, dim=1)
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
 
-    accuracy = correct / len(testloader.dataset)
-    loss = loss / len(testloader)
-    return loss, accuracy
+    loss     = total_loss / len(testloader)
+    accuracy = np.mean(np.array(all_preds) == np.array(all_labels))
+    qwk      = cohen_kappa_score(all_labels, all_preds, weights="quadratic")
+
+    return loss, accuracy, qwk
