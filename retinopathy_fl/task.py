@@ -116,6 +116,13 @@ def _get_base_data():
     global _FULL_TRAIN_DF, _VAL_DATASET
     if _FULL_TRAIN_DF is None:
         df = pd.read_csv(TRAIN_LABELS)
+        
+        df = df[df['image'].apply(
+            lambda x: os.path.exists(os.path.join(TRAIN_DIR, f"{x}.jpeg"))
+        )].reset_index(drop=True)
+        
+        print(f"Dostępnych obrazów: {len(df)}")
+        
         train_df, val_df = train_test_split(
             df, test_size=0.2, random_state=42, stratify=df["level"]
         )
